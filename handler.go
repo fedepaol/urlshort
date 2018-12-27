@@ -3,6 +3,7 @@ package urlshort
 import (
 	"net/http"
 
+	"github.com/dgraph-io/badger"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -23,42 +24,47 @@ func MapHandler(pathsToUrls map[string]string, fallback http.Handler) http.Handl
 	}
 }
 
-// YAMLHandler will parse the provided YAML and then return
-// an http.HandlerFunc (which also implements http.Handler)
-// that will attempt to map any paths to their corresponding
-// URL. If the path is not provided in the YAML, then the
-// fallback http.Handler will be called instead.
-//
-// YAML is expected to be in the format:
-//
-//     - path: /some-path
-//       url: https://www.some-url.com/demo
-//
-// The only errors that can be returned all related to having
-// invalid YAML data.
-//
-// See MapHandler to create a similar http.HandlerFunc via
-// a mapping of paths to urls.
-func YAMLHandler(yml []byte, fallback http.Handler) (http.HandlerFunc, error) {
-	parsedYaml, err := parseYAML(yml)
-	if err != nil {
-		return nil, err
-	}
-	return MapHandler(parsedYaml, fallback), nil
-}
-
-func parseYAML(yml []byte) (map[string]string, error) {
+func LoadBadgerFromYaml(db *badger.DB, yml []byte) error {
 	m := make([]yamlRecord, 0)
 	err := yaml.Unmarshal([]byte(yml), &m)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	res := make(map[string]string)
-	for _, r := range m {
-		res[r.Path] = r.URL
-	}
-	return res, nil
+	err = db.Update(func(txn *badger.Txn) error {
+		for _, r := range m {
+			err := txn.Set([]byte(r.Path), []byte(r.URL))
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	return err
+}
+
+func BadgerHandler(db *badger.DB, fallback http.Handler) (http.HandlerFunc, error) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		var redirect string
+		err := db.View(func(txn *badger.Txn) error {
+			item, err := txn.Get([]byte(path))
+			if err != nil {
+				return err
+			}
+
+			v, err := item.Value()
+			redirect = string(v)
+			return nil
+		})
+
+		if err != nil {
+			fallback.ServeHTTP(w, r)
+		}
+		http.Redirect(w, r, redirect, 301)
+	}, nil
+
 }
 
 type yamlRecord struct {

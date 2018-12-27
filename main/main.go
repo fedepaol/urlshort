@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/dgraph-io/badger"
 	"github.com/gophercises/urlshort"
 )
 
@@ -26,18 +27,26 @@ func main() {
 		log.Fatalf("Failed to open %s", *filename)
 	}
 
-	// Build the MapHandler using the mux as the fallback
-	pathsToUrls := map[string]string{
-		"/urlshort-godoc": "https://godoc.org/github.com/gophercises/urlshort",
-		"/yaml-godoc":     "https://godoc.org/gopkg.in/yaml.v2",
+	opts := badger.DefaultOptions
+	opts.Dir = "/tmp/badger"
+	opts.ValueDir = "/tmp/badger"
+	db, err := badger.Open(opts)
+	if err != nil {
+		log.Fatal(err)
 	}
-	mapHandler := urlshort.MapHandler(pathsToUrls, mux)
-	yamlHandler, err := urlshort.YAMLHandler(res, mapHandler)
+	defer db.Close()
+
+	err = urlshort.LoadBadgerFromYaml(db, res)
 	if err != nil {
 		panic(err)
 	}
+	badgerHandler, err := urlshort.BadgerHandler(db, mux)
+	if err != nil {
+		panic(err)
+	}
+
 	fmt.Println("Starting the server on :8080")
-	http.ListenAndServe(":8080", yamlHandler)
+	http.ListenAndServe(":8080", badgerHandler)
 }
 
 func defaultMux() *http.ServeMux {
